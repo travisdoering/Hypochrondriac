@@ -8,8 +8,8 @@ import { TriageBanner } from "@/components/TriageBanner";
 import { RecordPanel } from "@/components/record/RecordPanel";
 import { PersonSwitcher } from "@/components/PersonSwitcher";
 import { plainText } from "@/components/Markdown";
-import { activePerson, chatStore, initActivePerson, prefsStore, recordStore, STORAGE_ERROR_EVENT, useChat, usePrefs, type Attachment } from "@/lib/store";
-import { clearConversation, clientOverrideHeaders, dismissTriage, sendMessage, stopStreaming, transcriptText } from "@/lib/chat-client";
+import { activePerson, chatStore, initActivePerson, prefsStore, recordStore, STORAGE_ERROR_EVENT, updateSavedRecord, useChat, usePrefs, type Attachment } from "@/lib/store";
+import { clearConversation, clientOverrideHeaders, dismissTriage, sendMessage, stopForSwitch, stopStreaming, transcriptText } from "@/lib/chat-client";
 import { SettingsDialog } from "@/components/SettingsDialog";
 import { IntroDialog } from "@/components/IntroDialog";
 import { PhoneDialog } from "@/components/PhoneDialog";
@@ -33,6 +33,7 @@ export default function Home() {
   const [phoneOpen, setPhoneOpen] = useState(false);
   const [toast, setToast] = useState<{ text: string; tone: "ok" | "error" } | null>(null);
   const savedThroughRef = useRef<string | undefined>(undefined);
+  const savingRef = useRef(false);
   // On phones the record is a drawer that starts closed; on desktop it's a remembered side panel.
   const [drawerOpen, setDrawerOpen] = useState(false);
 
@@ -104,15 +105,25 @@ export default function Home() {
     return () => window.removeEventListener(STORAGE_ERROR_EVENT, onErr);
   }, [showToast]);
 
-  /** Summarize the conversation into the record. Skips if nothing new since the last save. */
+  /**
+   * Summarize the conversation into the record. Skips if nothing new since the
+   * last save. If the person is switched while the summary is being written,
+   * the note still goes into the record of the person it was about.
+   */
   const saveSessionNote = async (): Promise<boolean> => {
+    if (savingRef.current) return false;
     const msgs = chatStore.get().messages;
     const lastId = msgs[msgs.length - 1]?.id;
-    if (msgs.length < 2 || msgs.some((m) => m.streaming)) return false;
+    if (msgs.length < 2) return false;
+    if (msgs.some((m) => m.streaming)) {
+      showToast("Wait for the reply to finish, then save.");
+      return false;
+    }
     if (savedThroughRef.current === lastId) {
       showToast("Already saved to your record");
       return true;
     }
+    savingRef.current = true;
     setSavingNote(true);
     const recordKey = recordStore.currentKey();
     try {
@@ -126,26 +137,34 @@ export default function Home() {
         showToast(data.error ?? "Couldn't save a note for this conversation.", "error");
         return false;
       }
-      if (recordStore.currentKey() !== recordKey) return false; // person switched while waiting
-      recordStore.set((r) => ({
-        ...r,
-        sessionNotes: [...r.sessionNotes, { id: uid(), ts: new Date().toISOString(), summary: data.summary + (data.followUps?.length ? ` Follow-ups: ${data.followUps.join("; ")}` : ""), triage: data.triage }],
-      }));
-      savedThroughRef.current = lastId;
-      showToast("Saved a note to your record (Plan → Session notes)");
+      const note = { id: uid(), ts: new Date().toISOString(), summary: data.summary + (data.followUps?.length ? ` Follow-ups: ${data.followUps.join("; ")}` : ""), triage: data.triage };
+      if (recordStore.currentKey() === recordKey) {
+        recordStore.set((r) => ({ ...r, sessionNotes: [...r.sessionNotes, note] }));
+        savedThroughRef.current = lastId;
+        showToast("Saved a note to your record (Plan → Session notes)");
+      } else {
+        // Person switched while waiting: file it with the person the conversation was about.
+        updateSavedRecord(recordKey, (r) => ({ ...r, sessionNotes: [...r.sessionNotes, note] }));
+        showToast("Saved the note to the previous person's record");
+      }
       return true;
     } catch {
       showToast("Couldn't reach the server to save a note.", "error");
       return false;
     } finally {
+      savingRef.current = false;
       setSavingNote(false);
     }
   };
 
   const newConversation = async () => {
-    if (busy) stopStreaming();
-    if (chat.messages.length >= 2) {
+    if (savingRef.current) return;
+    // Stop any reply synchronously so the conversation can be summarized right away.
+    if (busy) stopForSwitch();
+    const chatKey = chatStore.currentKey();
+    if (chatStore.get().messages.length >= 2) {
       const ok = await saveSessionNote();
+      if (chatStore.currentKey() !== chatKey) return; // switched people meanwhile: leave the new person's chat alone
       if (!ok && !window.confirm("The note couldn't be saved. Start a new conversation anyway? This one will be cleared.")) return;
     }
     savedThroughRef.current = undefined;
@@ -173,7 +192,7 @@ export default function Home() {
               <HeaderButton onClick={() => void saveSessionNote()} title="Summarize this conversation into your record" disabled={savingNote || busy}>
                 💾<span className="hidden sm:inline"> {savingNote ? "Saving…" : "Save note"}</span>
               </HeaderButton>
-              <HeaderButton onClick={newConversation} title="Start a new conversation (saves a note first)">
+              <HeaderButton onClick={() => void newConversation()} title="Start a new conversation (saves a note first)" disabled={savingNote}>
                 ✨<span className="hidden sm:inline"> New</span>
               </HeaderButton>
             </>

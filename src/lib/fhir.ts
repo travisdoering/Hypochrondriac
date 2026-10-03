@@ -437,7 +437,9 @@ function vitalsToJournal(obs: Observation[]): JournalEntry[] {
   for (const o of obs) {
     const ts = obsDate(o);
     const parsed = new Date(ts);
-    const day = Number.isNaN(parsed.getTime()) ? ts.slice(0, 10) : isoDay(parsed);
+    // A bare date ("2024-03-05") is already the calendar day; parsing it would read as UTC
+    // midnight and shift to the previous day in US time zones.
+    const day = /^\d{4}-\d{2}-\d{2}$/.test(ts) ? ts : Number.isNaN(parsed.getTime()) ? ts.slice(0, 10) : isoDay(parsed);
     let entry = byDay.get(day);
     if (!entry) {
       entry = { id: `fhir-vitals-${day}`, ts, source: "fhir", symptoms: [], tags: ["vitals", "from-ehr"], notes: "Vital signs recorded in EHR", vitals: {} };
@@ -729,12 +731,20 @@ export function bundleToSummary(bundle: Bundle): FhirSummary {
   };
 }
 
-export const FHIR_PRESETS: { label: string; baseUrl: string; authMode: Connection["authMode"]; note: string }[] = [
+export const FHIR_PRESETS: { label: string; baseUrl: string; authMode: Connection["authMode"]; note: string; clientId?: string }[] = [
   {
     label: "SMART Health IT sandbox (R4, open)",
     baseUrl: "https://launch.smarthealthit.org/v/r4/fhir",
     authMode: "none",
     note: "Synthetic patients, no login. Search a name like 'Smith' to pick one.",
+  },
+  {
+    label: "SMART Health IT sandbox - practice portal sign-in",
+    // The "sim" segment tells the sandbox to simulate a standalone portal login.
+    baseUrl: "https://launch.smarthealthit.org/v/r4/sim/eyJsYXVuY2hfdHlwZSI6InBhdGllbnQtc3RhbmRhbG9uZSJ9/fhir",
+    authMode: "smart",
+    clientId: "hypochondriac",
+    note: "Rehearses a real patient-portal login (SMART on FHIR). On the sandbox page pick anyone and type any password - it's a demo login - then pick a patient.",
   },
   {
     label: "HAPI FHIR public test server (R4, open)",

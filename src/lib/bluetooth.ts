@@ -166,6 +166,18 @@ export function readingTime(kind: DeviceKind, dv: DataView): Date | undefined {
   return undefined;
 }
 
+/**
+ * Many cuffs and meters ship with their clock unset (year 2000, 2010...). A
+ * device time more than a year old or more than a day in the future is not
+ * trusted; the reading is logged as "now" instead of years in the past.
+ */
+export function plausibleTime(t: Date | undefined, now = new Date()): Date | undefined {
+  if (!t) return undefined;
+  const diff = now.getTime() - t.getTime();
+  if (diff > 366 * 86_400_000 || diff < -86_400_000) return undefined;
+  return t;
+}
+
 /** Devices that stream continuously (about once a second) rather than per measurement. */
 export const CONTINUOUS_KINDS: ReadonlySet<DeviceKind> = new Set(["heart-rate", "spo2"]);
 
@@ -235,7 +247,7 @@ export async function connectDevice(spec: DeviceSpec, onReading: (r: Reading) =>
       const vitals = parse(ch.value);
       if (Object.keys(vitals).length) {
         // Stored readings replayed by cuffs/meters carry their own timestamp; use it.
-        const when = readingTime(spec.kind, ch.value) ?? new Date();
+        const when = plausibleTime(readingTime(spec.kind, ch.value)) ?? new Date();
         onReading({ kind: spec.kind, vitals, ts: when.toISOString(), deviceName: device.name, raw: hex(ch.value) });
       }
     } catch (e) {

@@ -72,8 +72,28 @@ function createStore<T>(defaultKey: string, initial: T, opts: StoreOptions<T> = 
     if (timer) return;
     timer = setTimeout(writeNow, opts.persistDelayMs);
   };
-  if (typeof window !== "undefined" && opts.persistDelayMs) {
-    window.addEventListener("pagehide", writeNow);
+  /**
+   * Write only if this tab has an unsaved (debounced) change. Everything else
+   * is already on disk, and writing the in-memory copy could overwrite newer
+   * data from another tab, or bring back a person another tab just deleted.
+   */
+  const flushPending = () => {
+    if (timer) writeNow();
+  };
+  if (typeof window !== "undefined") {
+    if (opts.persistDelayMs) window.addEventListener("pagehide", flushPending);
+    // One listener per store (not per subscriber), so the in-memory copy stays
+    // current with other tabs even while no component is showing it.
+    window.addEventListener("storage", (e: StorageEvent) => {
+      if (e.storageArea && e.storageArea !== window.localStorage) return;
+      if (!loaded || e.key !== key) return;
+      try {
+        state = e.newValue == null ? initial : opts.migrate ? opts.migrate(JSON.parse(e.newValue)) : (JSON.parse(e.newValue) as T);
+      } catch {
+        return;
+      }
+      listeners.forEach((l) => l());
+    });
   }
 
   const get = () => {
@@ -88,20 +108,8 @@ function createStore<T>(defaultKey: string, initial: T, opts: StoreOptions<T> = 
   };
   const subscribe = (l: () => void) => {
     listeners.add(l);
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === key && e.newValue) {
-        try {
-          state = opts.migrate ? opts.migrate(JSON.parse(e.newValue)) : (JSON.parse(e.newValue) as T);
-          l();
-        } catch {
-          /* ignore */
-        }
-      }
-    };
-    window.addEventListener("storage", onStorage);
     return () => {
       listeners.delete(l);
-      window.removeEventListener("storage", onStorage);
     };
   };
   const useStore = () => useSyncExternalStore(subscribe, get, () => initial);
@@ -109,14 +117,14 @@ function createStore<T>(defaultKey: string, initial: T, opts: StoreOptions<T> = 
   const rekey = (newKey: string) => {
     load(); // make sure the current key is resolved and loaded before comparing/flushing
     if (newKey === key) return;
-    writeNow(); // flush any pending write for the old key
+    flushPending(); // save this tab's unsaved change to the old key; never rewrite already-saved data
     key = newKey;
     loaded = false;
     state = initial;
     load();
     listeners.forEach((l) => l());
   };
-  return { get, set, subscribe, useStore, rekey, flush: writeNow, currentKey: () => (load(), key) };
+  return { get, set, subscribe, useStore, rekey, flush: flushPending, currentKey: () => (load(), key) };
 }
 
 // ---- Record ----------------------------------------------------------------
@@ -312,6 +320,22 @@ export function removePerson(id: string) {
     /* ignore */
   }
   prefsStore.set((p) => ({ ...p, people: p.people.filter((x) => x.id !== id) }));
+}
+
+/**
+ * Apply a change to a saved record that is NOT the one currently loaded
+ * (e.g. a session note finishing after the person was switched). Writes
+ * straight to storage; if it is in fact the loaded record, goes through the store.
+ */
+export function updateSavedRecord(key: string, fn: (r: HealthRecord) => HealthRecord) {
+  if (recordStore.currentKey() === key) return recordStore.set(fn);
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (raw == null) return; // person was removed meanwhile
+    window.localStorage.setItem(key, JSON.stringify(fn(migrateRecord(JSON.parse(raw)))));
+  } catch (e) {
+    window.dispatchEvent(new CustomEvent(STORAGE_ERROR_EVENT, { detail: { key, message: e instanceof Error ? e.message : String(e) } }));
+  }
 }
 
 /**

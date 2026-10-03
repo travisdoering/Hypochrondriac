@@ -133,12 +133,16 @@ export function toApiMessages(messages: ChatMessage[], budgetChars = requestBudg
     }
   }
 
+  const lastUser = userIdx[userIdx.length - 1];
   const out: Anthropic.MessageParam[] = [];
-  recent.forEach((m) => {
+  recent.forEach((m, i) => {
     if (m.role === "assistant") {
       if (m.text.trim()) out.push({ role: "assistant", content: m.text });
       return;
     }
+    // Tell the model honestly why a file isn't there (current message vs earlier ones).
+    const missing = (what: string, name: string) =>
+      i === lastUser ? `[${what} "${name}" was attached but couldn't be sent (unsupported or too large); ask for a photo or a smaller file]` : `[${what} attached earlier, no longer available: ${name}]`;
     const blocks: Anthropic.ContentBlockParam[] = [];
     for (const a of m.attachments ?? []) {
       if (a.kind === "image") {
@@ -149,14 +153,14 @@ export function toApiMessages(messages: ChatMessage[], budgetChars = requestBudg
             source: { type: "base64", media_type: mediaType as "image/jpeg" | "image/png" | "image/gif" | "image/webp", data },
           });
         } else {
-          blocks.push({ type: "text", text: `[image attached earlier, no longer available: ${a.name}]` });
+          blocks.push({ type: "text", text: missing("image", a.name) });
         }
       } else if (a.kind === "pdf") {
         if (keepBinary.has(a.id)) {
           const { data } = dataUrlToBase64(a.data);
           blocks.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data }, title: a.name });
         } else {
-          blocks.push({ type: "text", text: `[PDF attached earlier, no longer available: ${a.name}]` });
+          blocks.push({ type: "text", text: missing("PDF", a.name) });
         }
       } else {
         blocks.push({ type: "text", text: `<attached_file name="${a.name}">\n${a.data.slice(0, 60_000)}\n</attached_file>` });

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Attachment } from "@/lib/store";
-import { fileToAttachment } from "@/lib/chat-client";
+import { fileToAttachment, requestBudgetChars } from "@/lib/chat-client";
 import { useSpeechRecognition } from "@/lib/speech";
 import { uid } from "@/lib/record";
 
@@ -73,9 +73,18 @@ export function Composer(p: ComposerProps) {
 
   const addFiles = async (files: FileList | File[]) => {
     setAttachError(null);
+    // Keep one message's attachments within what a single request can carry.
+    const budget = requestBudgetChars();
+    let used = p.pendingAttachments.reduce((n, a) => n + (a.kind === "text" ? 0 : a.data.length), 0);
     for (const f of Array.from(files)) {
       try {
         const a = await fileToAttachment(f);
+        const size = a.kind === "text" ? 0 : a.data.length;
+        if (used + size > budget) {
+          setAttachError(`"${f.name}" won't fit in this message with the other attachments. Send these first, then attach it in the next message.`);
+          continue;
+        }
+        used += size;
         p.setPendingAttachments((prev) => [...prev, a]);
       } catch (e) {
         setAttachError(e instanceof Error ? e.message : String(e));

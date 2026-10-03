@@ -88,6 +88,7 @@ function NewFhirConnection({ onDone }: { onDone: () => void }) {
       setBaseUrl(FHIR_PRESETS[i].baseUrl);
       setLabel(FHIR_PRESETS[i].label);
       setAuthMode(FHIR_PRESETS[i].authMode);
+      setClientId(FHIR_PRESETS[i].clientId ?? "");
     }
   };
 
