@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { prefsStore, useRecord } from "@/lib/store";
+import { useEffect, useState } from "react";
+import { prefsStore, usePrefs, useRecord } from "@/lib/store";
 import { summarizeRecordForModel } from "@/lib/record";
 import { clientOverrideHeaders, transcriptText } from "@/lib/chat-client";
 import { inputCls } from "./TodayTab";
@@ -14,19 +14,24 @@ export function VisitTab() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [summary, setSummary] = useState<VisitSummary | null>(() => {
-    if (typeof window === "undefined") return null;
+  const personId = usePrefs().activePersonId;
+  const [summary, setSummary] = useState<VisitSummary | null>(null);
+
+  // Each person has their own saved sheet; reload when the person changes.
+  useEffect(() => {
+    setErr(null);
     try {
-      const s = window.localStorage.getItem(`hypo.visit.${prefsStore.get().activePersonId}`);
-      return s ? (JSON.parse(s) as VisitSummary) : null;
+      const s = window.localStorage.getItem(`hypo.visit.${personId}`);
+      setSummary(s ? (JSON.parse(s) as VisitSummary) : null);
     } catch {
-      return null;
+      setSummary(null);
     }
-  });
+  }, [personId]);
 
   const generate = async () => {
     setBusy(true);
     setErr(null);
+    const forPerson = prefsStore.get().activePersonId;
     try {
       const res = await fetch("/api/visit-summary", {
         method: "POST",
@@ -35,8 +40,9 @@ export function VisitTab() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
-      setSummary(data as VisitSummary);
-      window.localStorage.setItem(`hypo.visit.${prefsStore.get().activePersonId}`, JSON.stringify(data));
+      // Save under the person it was made for, even if someone else is selected now.
+      window.localStorage.setItem(`hypo.visit.${forPerson}`, JSON.stringify(data));
+      if (prefsStore.get().activePersonId === forPerson) setSummary(data as VisitSummary);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {

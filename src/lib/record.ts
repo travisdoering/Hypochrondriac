@@ -45,6 +45,8 @@ export interface JournalEntry {
   id: string;
   ts: string; // ISO
   source?: Source;
+  /** Which connection imported it (FHIR/CSV), so one source can be refreshed or removed alone. */
+  connectionId?: string;
   mood?: number; // 1-10
   energy?: number; // 1-10
   pain?: number; // 0-10
@@ -73,6 +75,8 @@ export interface LabPanel {
   source?: string; // lab name / uploaded file name
   kind: "labs" | "imaging" | "other";
   source_system?: Source;
+  /** Which connection imported it (FHIR), so one source can be refreshed or removed alone. */
+  connectionId?: string;
   summary?: string;
   /** For imaging pulled over DICOMweb: study UID + rendered thumbnails. */
   imaging?: { studyUid: string; modality?: string; description?: string; seriesCount?: number; instanceCount?: number; server?: string };
@@ -253,7 +257,7 @@ export function summarizeRecordForModel(r: HealthRecord, now = new Date()): stri
       }
       if (e.notes) parts.push(`notes: ${e.notes.slice(0, 240)}`);
       lines.push(
-        `- ${d.toISOString().slice(0, 10)} (${ago === 0 ? "today" : `${ago}d ago`})${e.source && e.source !== "user" && e.source !== "assistant" ? ` [${e.source}]` : ""} ${parts.join(" | ")}`,
+        `- ${isoDay(d)} (${ago === 0 ? "today" : `${ago}d ago`})${e.source && e.source !== "user" && e.source !== "assistant" ? ` [${e.source}]` : ""} ${parts.join(" | ")}`,
       );
     }
   } else {
@@ -353,7 +357,9 @@ export function fmtNum(v: number | string | undefined | null): string {
   if (!Number.isFinite(v)) return String(v);
   const a = Math.abs(v);
   const d = Number.isInteger(v) ? 0 : a >= 100 ? 0 : a >= 10 ? 1 : a >= 1 ? 2 : 3;
-  return v.toFixed(d).replace(/\.?0+$/, "");
+  const s = v.toFixed(d);
+  // Only trim zeros that follow a decimal point ("3.50" -> "3.5", "4.00" -> "4"), never "100" -> "1".
+  return d > 0 ? s.replace(/\.?0+$/, "") : s;
 }
 
 export function isoDay(d: Date): string {

@@ -137,6 +137,38 @@ export function parseHeartRate(dv: DataView): Vitals {
   return { heartRate: hr };
 }
 
+/** Bluetooth SIG "Date Time": uint16 year, then month, day, hours, minutes, seconds (7 bytes). */
+function dateTimeAt(dv: DataView, off: number): Date | undefined {
+  if (dv.byteLength < off + 7) return undefined;
+  const year = dv.getUint16(off, true);
+  const month = dv.getUint8(off + 2);
+  const day = dv.getUint8(off + 3);
+  if (!year || !month || !day) return undefined; // "unknown" encodings
+  const d = new Date(year, month - 1, day, dv.getUint8(off + 4), dv.getUint8(off + 5), dv.getUint8(off + 6));
+  return Number.isNaN(d.getTime()) ? undefined : d;
+}
+
+/** The measurement's own timestamp when the device includes one (BP cuffs, glucose meters). */
+export function readingTime(kind: DeviceKind, dv: DataView): Date | undefined {
+  try {
+    const flags = dv.getUint8(0);
+    if (kind === "bp" && flags & 0x02) return dateTimeAt(dv, 7);
+    if (kind === "glucose") {
+      const base = dateTimeAt(dv, 3);
+      if (base && flags & 0x01 && dv.byteLength >= 12) return new Date(base.getTime() + dv.getInt16(10, true) * 60_000);
+      return base;
+    }
+    if (kind === "thermometer" && flags & 0x02) return dateTimeAt(dv, 5);
+    if (kind === "scale" && flags & 0x02) return dateTimeAt(dv, 3);
+  } catch {
+    /* malformed packet */
+  }
+  return undefined;
+}
+
+/** Devices that stream continuously (about once a second) rather than per measurement. */
+export const CONTINUOUS_KINDS: ReadonlySet<DeviceKind> = new Set(["heart-rate", "spo2"]);
+
 const PARSERS: Record<DeviceKind, (dv: DataView) => Vitals> = {
   bp: parseBloodPressure,
   glucose: parseGlucose,
@@ -202,7 +234,9 @@ export async function connectDevice(spec: DeviceSpec, onReading: (r: Reading) =>
     try {
       const vitals = parse(ch.value);
       if (Object.keys(vitals).length) {
-        onReading({ kind: spec.kind, vitals, ts: new Date().toISOString(), deviceName: device.name, raw: hex(ch.value) });
+        // Stored readings replayed by cuffs/meters carry their own timestamp; use it.
+        const when = readingTime(spec.kind, ch.value) ?? new Date();
+        onReading({ kind: spec.kind, vitals, ts: when.toISOString(), deviceName: device.name, raw: hex(ch.value) });
       }
     } catch (e) {
       onStatus?.(`Could not parse a packet: ${(e as Error).message}`);

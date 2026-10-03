@@ -11,33 +11,70 @@ import type { Provider } from "./nppes";
 import type { DrugInfo } from "./openfda";
 import type { EduResult } from "./medlineplus";
 
-function createStore<T>(initialKey: string, initial: T, migrate?: (raw: unknown) => T) {
-  let key = initialKey;
+export const STORAGE_ERROR_EVENT = "hypo:storage-error";
+
+interface StoreOptions<T> {
+  migrate?: (raw: unknown) => T;
+  /** Resolve the storage key lazily on first load (e.g. from the active person). */
+  resolveKey?: () => string;
+  /** Custom serialization (e.g. to drop bulky data before writing). */
+  serialize?: (state: T) => string;
+  /** Batch writes; useful for state that changes many times a second while streaming. */
+  persistDelayMs?: number;
+}
+
+function createStore<T>(defaultKey: string, initial: T, opts: StoreOptions<T> = {}) {
+  let key = defaultKey;
+  let keyResolved = !opts.resolveKey;
   let state: T = initial;
   let loaded = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
   const listeners = new Set<() => void>();
 
   const load = () => {
     if (loaded || typeof window === "undefined") return;
+    if (!keyResolved) {
+      keyResolved = true;
+      try {
+        key = opts.resolveKey!();
+      } catch {
+        /* keep default */
+      }
+    }
     loaded = true;
     try {
       const raw = window.localStorage.getItem(key);
       if (raw) {
         const parsed = JSON.parse(raw);
-        state = migrate ? migrate(parsed) : (parsed as T);
+        state = opts.migrate ? opts.migrate(parsed) : (parsed as T);
       }
     } catch {
       state = initial;
     }
   };
 
-  const persist = () => {
+  /** Write now. Never writes a store that hasn't been loaded (that would clobber real data with defaults). */
+  const writeNow = () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    if (!loaded || typeof window === "undefined") return;
     try {
-      window.localStorage.setItem(key, JSON.stringify(state));
-    } catch {
-      /* quota or private mode - keep in memory */
+      window.localStorage.setItem(key, opts.serialize ? opts.serialize(state) : JSON.stringify(state));
+    } catch (e) {
+      // Quota exceeded or private mode: keep working in memory, tell the UI once per write.
+      window.dispatchEvent(new CustomEvent(STORAGE_ERROR_EVENT, { detail: { key, message: e instanceof Error ? e.message : String(e) } }));
     }
   };
+  const persist = () => {
+    if (!opts.persistDelayMs) return writeNow();
+    if (timer) return;
+    timer = setTimeout(writeNow, opts.persistDelayMs);
+  };
+  if (typeof window !== "undefined" && opts.persistDelayMs) {
+    window.addEventListener("pagehide", writeNow);
+  }
 
   const get = () => {
     load();
@@ -54,7 +91,7 @@ function createStore<T>(initialKey: string, initial: T, migrate?: (raw: unknown)
     const onStorage = (e: StorageEvent) => {
       if (e.key === key && e.newValue) {
         try {
-          state = migrate ? migrate(JSON.parse(e.newValue)) : (JSON.parse(e.newValue) as T);
+          state = opts.migrate ? opts.migrate(JSON.parse(e.newValue)) : (JSON.parse(e.newValue) as T);
           l();
         } catch {
           /* ignore */
@@ -70,19 +107,20 @@ function createStore<T>(initialKey: string, initial: T, migrate?: (raw: unknown)
   const useStore = () => useSyncExternalStore(subscribe, get, () => initial);
   /** Re-point the store at a different localStorage key (e.g. another person). */
   const rekey = (newKey: string) => {
+    load(); // make sure the current key is resolved and loaded before comparing/flushing
     if (newKey === key) return;
-    persist();
+    writeNow(); // flush any pending write for the old key
     key = newKey;
     loaded = false;
     state = initial;
     load();
     listeners.forEach((l) => l());
   };
-  return { get, set, subscribe, useStore, rekey, currentKey: () => key };
+  return { get, set, subscribe, useStore, rekey, flush: writeNow, currentKey: () => (load(), key) };
 }
 
 // ---- Record ----------------------------------------------------------------
-function migrateRecord(raw: unknown): HealthRecord {
+export function migrateRecord(raw: unknown): HealthRecord {
   const r = (raw ?? {}) as Partial<HealthRecord>;
   return {
     ...EMPTY_RECORD,
@@ -96,7 +134,10 @@ function migrateRecord(raw: unknown): HealthRecord {
     sessionNotes: r.sessionNotes ?? [],
   };
 }
-export const recordStore = createStore<HealthRecord>("hypo.record.v1", EMPTY_RECORD, migrateRecord);
+export const recordStore = createStore<HealthRecord>("hypo.record.v1", EMPTY_RECORD, {
+  migrate: migrateRecord,
+  resolveKey: () => recordKeyFor(prefsStore.get().activePersonId),
+});
 export const useRecord = recordStore.useStore;
 
 // ---- Conversation ----------------------------------------------------------
@@ -153,14 +194,48 @@ const EMPTY_CHAT: ChatState = {
   usage: { input: 0, output: 0, cacheRead: 0, turns: 0 },
 };
 
-export const chatStore = createStore<ChatState>("hypo.chat.v1", EMPTY_CHAT, (raw) => {
-  const c = (raw ?? {}) as Partial<ChatState>;
-  return {
-    ...EMPTY_CHAT,
-    ...c,
-    messages: (c.messages ?? []).map((m) => ({ ...m, streaming: false })),
-    usage: { ...EMPTY_CHAT.usage, ...(c.usage ?? {}) },
-  };
+/**
+ * localStorage holds ~5 MB per site, so saved conversations keep only small,
+ * recent images (newest first, within a budget) and short text files. PDFs
+ * and big images stay in memory for the current session and are replaced by
+ * their name afterwards. The record itself is never trimmed.
+ */
+const SAVED_IMAGE_MAX = 400_000; // chars of base64 per image
+const SAVED_ATTACHMENT_BUDGET = 1_500_000; // chars across the whole conversation
+const SAVED_TEXT_MAX = 20_000;
+export function serializeChat(c: ChatState): string {
+  let budget = SAVED_ATTACHMENT_BUDGET;
+  const slimmed = [...c.messages].reverse().map((m) => {
+    if (!m.attachments?.length) return { ...m, streaming: false };
+    return {
+      ...m,
+      streaming: false,
+      attachments: m.attachments.map((a) => {
+        if (a.kind === "text") return a.data.length > SAVED_TEXT_MAX ? { ...a, data: a.data.slice(0, SAVED_TEXT_MAX) } : a;
+        if (a.kind === "image" && a.data.length <= SAVED_IMAGE_MAX && a.data.length <= budget) {
+          budget -= a.data.length;
+          return a;
+        }
+        return { ...a, data: "" };
+      }),
+    };
+  });
+  return JSON.stringify({ ...c, messages: slimmed.reverse() });
+}
+
+export const chatStore = createStore<ChatState>("hypo.chat.v1", EMPTY_CHAT, {
+  migrate: (raw) => {
+    const c = (raw ?? {}) as Partial<ChatState>;
+    return {
+      ...EMPTY_CHAT,
+      ...c,
+      messages: (c.messages ?? []).map((m) => ({ ...m, streaming: false })),
+      usage: { ...EMPTY_CHAT.usage, ...(c.usage ?? {}) },
+    };
+  },
+  resolveKey: () => chatKeyFor(prefsStore.get().activePersonId),
+  serialize: serializeChat,
+  persistDelayMs: 400,
 });
 export const useChat = chatStore.useStore;
 
@@ -192,10 +267,12 @@ const DEFAULT_PREFS: Prefs = {
   people: [{ id: "me", name: "Me", emoji: "🙂" }],
   activePersonId: "me",
 };
-export const prefsStore = createStore<Prefs>("hypo.prefs.v1", DEFAULT_PREFS, (raw) => {
-  const p = (raw ?? {}) as Partial<Prefs>;
-  const people = p.people?.length ? p.people : DEFAULT_PREFS.people;
-  return { ...DEFAULT_PREFS, ...p, people, activePersonId: people.some((x) => x.id === p.activePersonId) ? p.activePersonId! : people[0].id };
+export const prefsStore = createStore<Prefs>("hypo.prefs.v1", DEFAULT_PREFS, {
+  migrate: (raw) => {
+    const p = (raw ?? {}) as Partial<Prefs>;
+    const people = p.people?.length ? p.people : DEFAULT_PREFS.people;
+    return { ...DEFAULT_PREFS, ...p, people, activePersonId: people.some((x) => x.id === p.activePersonId) ? p.activePersonId! : people[0].id };
+  },
 });
 export const usePrefs = prefsStore.useStore;
 
@@ -237,11 +314,27 @@ export function removePerson(id: string) {
   prefsStore.set((p) => ({ ...p, people: p.people.filter((x) => x.id !== id) }));
 }
 
-/** Point the record/chat stores at the active person on first load. */
+/**
+ * Point the record/chat stores at the active person, and follow person
+ * switches made in other tabs so a tab never shows one person's name over
+ * another person's data.
+ */
+let crossTabWired = false;
 export function initActivePerson() {
-  const prefs = prefsStore.get();
-  recordStore.rekey(recordKeyFor(prefs.activePersonId));
-  chatStore.rekey(chatKeyFor(prefs.activePersonId));
+  const sync = () => {
+    const id = prefsStore.get().activePersonId;
+    recordStore.rekey(recordKeyFor(id));
+    chatStore.rekey(chatKeyFor(id));
+  };
+  sync();
+  if (crossTabWired || typeof window === "undefined") return;
+  crossTabWired = true;
+  window.addEventListener("storage", (e) => {
+    if (e.key !== "hypo.prefs.v1" || !e.newValue) return;
+    // prefsStore's own storage listener (the page always subscribes) applies the
+    // new prefs; defer so it has run, then follow the active person. No writes here.
+    setTimeout(sync, 0);
+  });
 }
 
 export function activePerson(): Person {

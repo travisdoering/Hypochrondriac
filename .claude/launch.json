@@ -6,6 +6,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--", "--port", "3111"],
       "port": 3111
+    },
+    {
+      "name": "hypochondriac-mock",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["scripts/dev-mock.mjs"],
+      "port": 3000
     }
   ]
 }

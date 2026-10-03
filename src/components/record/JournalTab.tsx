@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { recordStore, useRecord } from "@/lib/store";
-import { fmtNum, type JournalEntry } from "@/lib/record";
+import { fmtNum, isoDay, type JournalEntry } from "@/lib/record";
 import { bus } from "@/lib/bus";
 import { SymptomHeatmap } from "./SymptomHeatmap";
 
@@ -20,7 +20,7 @@ export function JournalTab() {
   const byDay = useMemo(() => {
     const m = new Map<string, JournalEntry[]>();
     for (const e of entries) {
-      const d = e.ts.slice(0, 10);
+      const d = isoDay(new Date(e.ts));
       m.set(d, [...(m.get(d) ?? []), e]);
     }
     return [...m.entries()];

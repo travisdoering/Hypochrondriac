@@ -7,6 +7,7 @@
     "dev": "next dev",
     "dev:lan": "next dev -H 0.0.0.0",
     "dev:phone": "next dev -H 0.0.0.0 --experimental-https",
+    "dev:mock": "node scripts/dev-mock.mjs",
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",

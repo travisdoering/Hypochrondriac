@@ -7,7 +7,7 @@ import { findLabRef } from "@/lib/labs-reference";
 import { Sparkline } from "../Sparkline";
 import { bus } from "@/lib/bus";
 import { fmtDay, Tag } from "./JournalTab";
-import { DicomWebClient } from "@/lib/dicom";
+import { DicomWebClient, dicomTokenFor } from "@/lib/dicom";
 import { uid, fmtNum } from "@/lib/record";
 
 const FLAG_COLOR: Record<NonNullable<LabResult["flag"]>, string> = {
@@ -44,6 +44,7 @@ export function LabsTab() {
         m.set(key, cur);
       }
     }
+    for (const v of m.values()) v.pts.sort((a, b) => a.x - b.x); // so "latest" really is the latest date
     return [...m.entries()].filter(([, v]) => v.pts.length >= 2).sort((a, b) => b[1].pts.length - a[1].pts.length);
   }, [r.labs]);
 
@@ -93,10 +94,13 @@ export function LabsTab() {
 }
 
 function PanelCard({ p, open, onToggle }: { p: LabPanel; open: boolean; onToggle: () => void }) {
+  const r = useRecord();
   const flagged = p.results.filter((x) => x.flag && x.flag !== "normal");
   const critical = p.results.filter((x) => x.flag?.startsWith("critical"));
   const [thumbs, setThumbs] = useState<string[] | null>(null);
   const [loadingThumbs, setLoadingThumbs] = useState(false);
+  const [imgError, setImgError] = useState<string | null>(null);
+  const dicomClient = () => new DicomWebClient(p.imaging!.server!, dicomTokenFor(r.connections, p.imaging!.server!));
 
   const explain = () => {
     const body = panelToText(p);
@@ -109,8 +113,9 @@ function PanelCard({ p, open, onToggle }: { p: LabPanel; open: boolean; onToggle
   const askAboutImages = async () => {
     if (!p.imaging?.server) return;
     setLoadingThumbs(true);
+    setImgError(null);
     try {
-      const c = new DicomWebClient(p.imaging.server);
+      const c = dicomClient();
       const series = await c.series(p.imaging.studyUid);
       const atts = [];
       for (const s of series.slice(0, 3)) {
@@ -125,6 +130,9 @@ function PanelCard({ p, open, onToggle }: { p: LabPanel; open: boolean; onToggle
         attachments: atts,
         extra: "These images were pulled from the person's imaging facility over DICOMweb. Describe anatomy and anything visually notable in plain language, be explicit that a single rendered frame is not a diagnostic read, and point them to the radiology report / ordering clinician for the actual interpretation.",
       });
+      if (!atts.length) setImgError("The imaging server didn't return any viewable frames for this study.");
+    } catch (e) {
+      setImgError(`Couldn't load images: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setLoadingThumbs(false);
     }
@@ -134,12 +142,21 @@ function PanelCard({ p, open, onToggle }: { p: LabPanel; open: boolean; onToggle
     if (!p.imaging?.server || thumbs) return;
     setLoadingThumbs(true);
     try {
-      const c = new DicomWebClient(p.imaging.server);
+      const c = dicomClient();
+      const needsAuth = !!dicomTokenFor(r.connections, p.imaging.server);
       const series = await c.series(p.imaging.studyUid);
       const urls: string[] = [];
       for (const s of series.slice(0, 6)) {
         const inst = await c.instances(p.imaging.studyUid, s.seriesUid);
-        if (inst.length) urls.push(c.renderedUrl(p.imaging.studyUid, s.seriesUid, inst[Math.floor(inst.length / 2)].sopUid, { viewport: "256,256" }));
+        if (!inst.length) continue;
+        const sop = inst[Math.floor(inst.length / 2)].sopUid;
+        if (needsAuth) {
+          // <img> can't send a token; fetch the frame and inline it.
+          const img = await c.renderedBase64(p.imaging.studyUid, s.seriesUid, sop);
+          urls.push(`data:${img.mediaType};base64,${img.data}`);
+        } else {
+          urls.push(c.renderedUrl(p.imaging.studyUid, s.seriesUid, sop, { viewport: "256,256" }));
+        }
       }
       setThumbs(urls);
     } catch {
@@ -221,6 +238,7 @@ function PanelCard({ p, open, onToggle }: { p: LabPanel; open: boolean; onToggle
                 {p.imaging.modality} {p.imaging.description} · {p.imaging.seriesCount ?? "?"} series, {p.imaging.instanceCount ?? "?"} images
               </div>
               {loadingThumbs && <div className="mt-1 text-xs text-ink-3">Loading images...</div>}
+              {imgError && <div className="mt-1 text-xs text-[var(--critical)]">{imgError}</div>}
               {thumbs && thumbs.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   {thumbs.map((u) => (

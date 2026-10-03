@@ -7,8 +7,11 @@ Next.js 16 (App Router, Turbopack) + React 19 + Tailwind v4 + `@anthropic-ai/sdk
 ```bash
 npm run dev          # http://localhost:3000 (the .claude/launch.json preview uses port 3111)
 npm run typecheck    # tsc --noEmit
-npm test             # tsx --test tests/*.test.ts
+npm test             # tsx --test tests/*.test.ts (includes chat-route tests against scripts/mock-anthropic.mjs)
 npm run build        # next build
+npm run dev:mock     # app + local Anthropic mock, no API key needed (canned replies)
+npm run dev:lan      # reachable from a phone on the same Wi-Fi (http; no camera/mic on phones)
+npm run dev:phone    # same, over https (local cert) so phone camera/mic work
 ```
 
 ## Product rules (from the owner)
@@ -27,6 +30,13 @@ npm run build        # next build
 - `src/lib/store.ts` - tiny `useSyncExternalStore` stores: `recordStore`, `chatStore`, `prefsStore`; family profiles via `switchPerson` / `addPerson` (stores are re-keyed per person).
 - `src/lib/fhir.ts`, `src/lib/dicom.ts` - clients + mapping; proxied through `src/app/api/fhir` and `src/app/api/dicomweb`.
 - `src/components/record/*` - the side panel tabs. `src/lib/bus.ts` lets panels drop a message into the chat.
+
+## Gotchas
+
+- `recordStore` / `chatStore` resolve their localStorage key from the active person lazily; never write a store that hasn't loaded (see `writeNow` in `src/lib/store.ts`). Switching people goes through `stopForSwitch()` first.
+- Saved conversations drop PDFs and large images (`serializeChat`); only the record is kept in full.
+- FHIR imports are tagged with `connectionId`; sync/disconnect only touch that connection's items.
+- Don't run `next build` while a dev server is running in the same folder.
 
 ## Conventions
 

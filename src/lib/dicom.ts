@@ -133,6 +133,19 @@ export class DicomWebClient {
   }
 }
 
+/** The bearer token (kept in this tab's sessionStorage) for the connection serving `server`, if any. */
+export function dicomTokenFor(connections: { id: string; kind: string; baseUrl: string }[], server: string): string | undefined {
+  if (typeof sessionStorage === "undefined") return undefined;
+  const norm = (u: string) => u.replace(/\/+$/, "");
+  const conn = connections.find((c) => c.kind === "dicomweb" && norm(c.baseUrl) === norm(server));
+  if (!conn) return undefined;
+  try {
+    return sessionStorage.getItem(`hypo.bearer.${conn.id}`) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export const DICOM_PRESETS: { label: string; baseUrl: string; note: string }[] = [
   {
     label: "Orthanc public demo (DICOMweb, open)",

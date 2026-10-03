@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { TRIAGE_LABEL, type TriageLevel } from "@/lib/record";
 import type { TriageState } from "@/lib/store";
 import { CRISIS_RESOURCES } from "@/lib/redflags";
@@ -26,7 +27,48 @@ export function TriageBanner({ triage, onDismiss }: { triage: TriageState; onDis
   if (triage.dismissed || triage.level === "none") return null;
   const color = COLORS[triage.level];
   const isEmergency = triage.level === "emergency";
-  const mental = /988|suicid|crisis|self-harm|matter/i.test(triage.reason + " " + (triage.nextStep ?? ""));
+  const text = `${triage.reason} ${triage.nextStep ?? ""}`;
+  const mental = /988|suicid|crisis|self-harm|you matter|kill (myself|themselves)/i.test(text);
+  const poison = /poison|overdos|swallow|ingest|toxic/i.test(text);
+  return <BannerBody triage={triage} onDismiss={onDismiss} color={color} isEmergency={isEmergency} mental={mental} poison={poison} />;
+}
+
+function BannerBody({
+  triage,
+  onDismiss,
+  color,
+  isEmergency,
+  mental,
+  poison,
+}: {
+  triage: TriageState;
+  onDismiss: () => void;
+  color: string;
+  isEmergency: boolean;
+  mental: boolean;
+  poison: boolean;
+}) {
+  // Emergencies always show in full. Anything less starts expanded and can be
+  // folded to one line so it doesn't eat a phone screen.
+  const [collapsed, setCollapsed] = useState(false);
+  useEffect(() => setCollapsed(false), [triage.ts]);
+  if (collapsed && !isEmergency) {
+    return (
+      <button
+        onClick={() => setCollapsed(false)}
+        className="no-print mx-auto flex w-full max-w-3xl items-center gap-2 rounded-xl border px-3 py-1.5 text-left text-xs shadow-sm"
+        style={{ borderColor: color, background: `color-mix(in srgb, ${color} 10%, var(--surface))` }}
+        aria-expanded={false}
+      >
+        <span aria-hidden>{ICON[triage.level]}</span>
+        <span className="shrink-0 rounded-full px-1.5 py-0.5 font-semibold uppercase tracking-wide text-white" style={{ background: color }}>
+          {triage.level.replace("-", " ")}
+        </span>
+        <span className="min-w-0 flex-1 truncate text-ink">{triage.reason}</span>
+        <span className="text-ink-3">▾</span>
+      </button>
+    );
+  }
   return (
     <div
       role={isEmergency ? "alert" : "status"}
@@ -63,7 +105,7 @@ export function TriageBanner({ triage, onDismiss }: { triage: TriageState; onDis
                     {r.label}: {r.value}
                   </a>
                 ))}
-              {!mental && (
+              {poison && (
                 <a href="tel:18002221222" className="rounded-lg border px-3 py-1.5 text-sm font-semibold" style={{ borderColor: color, color }}>
                   Poison Control 1-800-222-1222
                 </a>
@@ -71,9 +113,16 @@ export function TriageBanner({ triage, onDismiss }: { triage: TriageState; onDis
             </div>
           )}
         </div>
-        <button onClick={onDismiss} className="rounded p-1 text-ink-3 hover:bg-surface-2 hover:text-ink" aria-label="Dismiss">
-          ×
-        </button>
+        <div className="flex shrink-0 flex-col items-center">
+          <button onClick={onDismiss} className="rounded p-1 text-ink-3 hover:bg-surface-2 hover:text-ink" aria-label="Dismiss">
+            ×
+          </button>
+          {!isEmergency && (
+            <button onClick={() => setCollapsed(true)} className="rounded p-1 text-xs text-ink-3 hover:bg-surface-2 hover:text-ink" aria-label="Fold banner" aria-expanded={true}>
+              ▴
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

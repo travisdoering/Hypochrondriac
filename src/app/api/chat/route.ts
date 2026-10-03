@@ -76,6 +76,9 @@ export async function POST(req: NextRequest) {
         }
       };
       const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+      // Text before and after a tool round arrives as separate turns; keep them from running together.
+      let lastChar = "";
+      let breakBeforeNextText = false;
       try {
         for (let iter = 0; iter < MAX_ITERATIONS && !closed; iter++) {
           const s = client.messages.stream({
@@ -84,13 +87,24 @@ export async function POST(req: NextRequest) {
             max_tokens: 12_000,
             system,
             tools: TOOLS,
+            // On the last allowed round, make the model answer in words instead of calling more tools.
+            ...(iter === MAX_ITERATIONS - 1 ? { tool_choice: { type: "none" as const } } : {}),
             messages,
             thinking: { type: "adaptive" },
             output_config: { effort },
           });
 
           current = s;
-          s.on("text", (delta) => send({ t: "text", d: delta }));
+          s.on("text", (delta) => {
+            if (!delta) return;
+            let d = delta;
+            if (breakBeforeNextText) {
+              breakBeforeNextText = false;
+              if (lastChar && !/\s/.test(lastChar) && !/^\s/.test(d)) d = "\n\n" + d;
+            }
+            lastChar = d[d.length - 1];
+            send({ t: "text", d });
+          });
 
           const message = await s.finalMessage();
           current = null;
@@ -189,6 +203,7 @@ export async function POST(req: NextRequest) {
             results.push({ type: "tool_result", tool_use_id: tu.id, content: "Recorded." });
           }
           messages.push({ role: "user", content: results });
+          breakBeforeNextText = true;
         }
         send({ t: "done", usage, model });
       } catch (err) {

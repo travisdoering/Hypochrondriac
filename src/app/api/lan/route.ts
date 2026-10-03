@@ -9,8 +9,11 @@ export const dynamic = "force-dynamic";
  * "Open on your phone" QR code can point at http://192.168.x.x:PORT instead
  * of localhost. Virtual adapters (WSL, Hyper-V, Docker, VPN) are skipped.
  */
-export async function GET() {
-  if (process.env.NODE_ENV !== "development") return NextResponse.json({ addresses: [] });
+export async function GET(req: Request) {
+  // Only useful (and only answered) when the app is being run on this computer.
+  const host = (req.headers.get("host") ?? "").replace(/:\d+$/, "");
+  const local = host === "localhost" || host === "127.0.0.1" || host === "[::1]";
+  if (process.env.NODE_ENV !== "development" && !local) return NextResponse.json({ addresses: [] });
   const skip = /vethernet|wsl|hyper-v|virtual|vmware|vbox|docker|loopback|bluetooth|tailscale|zerotier|utun|tun|tap/i;
   const out: { name: string; address: string }[] = [];
   for (const [name, list] of Object.entries(os.networkInterfaces())) {

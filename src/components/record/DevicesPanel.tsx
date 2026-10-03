@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { DEVICE_SPECS, bluetoothSupported, connectDevice, describeReading, type DeviceSession, type Reading } from "@/lib/bluetooth";
+import { CONTINUOUS_KINDS, DEVICE_SPECS, bluetoothSupported, connectDevice, describeReading, type DeviceKind, type DeviceSession, type Reading } from "@/lib/bluetooth";
 import { recordStore } from "@/lib/store";
 import { uid } from "@/lib/record";
 import { bus } from "@/lib/bus";
@@ -18,6 +18,7 @@ export function DevicesPanel() {
   const [session, setSession] = useState<DeviceSession | null>(null);
   const [readings, setReadings] = useState<Reading[]>([]);
   const sessionRef = useRef<DeviceSession | null>(null);
+  const lastLoggedRef = useRef<Partial<Record<DeviceKind, number>>>({});
 
   useEffect(() => setSupported(bluetoothSupported()), []);
   useEffect(() => () => sessionRef.current?.disconnect(), []);
@@ -31,13 +32,26 @@ export function DevicesPanel() {
         spec,
         (r) => {
           setReadings((prev) => [r, ...prev].slice(0, 20));
-          recordStore.set((rec) => ({
-            ...rec,
-            journal: [
-              ...rec.journal,
-              { id: uid(), ts: r.ts, source: "user", symptoms: [], tags: ["device", spec.kind], notes: `${spec.label}${r.deviceName ? ` (${r.deviceName})` : ""} reading`, vitals: r.vitals },
-            ],
-          }));
+          // Continuous monitors stream every second: log at most one reading a minute.
+          if (CONTINUOUS_KINDS.has(spec.kind)) {
+            const last = lastLoggedRef.current[spec.kind] ?? 0;
+            if (Date.now() - last < 60_000) return;
+            lastLoggedRef.current[spec.kind] = Date.now();
+          }
+          recordStore.set((rec) => {
+            // Cuffs and meters replay stored readings on every connection: skip ones already logged.
+            const t = new Date(r.ts).getTime();
+            const same = JSON.stringify(r.vitals);
+            const dup = rec.journal.some((e) => e.tags.includes("device") && e.tags.includes(spec.kind) && Math.abs(new Date(e.ts).getTime() - t) < 60_000 && JSON.stringify(e.vitals) === same);
+            if (dup) return rec;
+            return {
+              ...rec,
+              journal: [
+                ...rec.journal,
+                { id: uid(), ts: r.ts, source: "user", symptoms: [], tags: ["device", spec.kind], notes: `${spec.label}${r.deviceName ? ` (${r.deviceName})` : ""} reading`, vitals: r.vitals },
+              ],
+            };
+          });
         },
         setStatus,
       );

@@ -14,6 +14,7 @@ import {
   type LabResult,
   type Profile,
   type Vitals,
+  isoDay,
   uid,
 } from "./record";
 
@@ -435,7 +436,8 @@ function vitalsToJournal(obs: Observation[]): JournalEntry[] {
   const byDay = new Map<string, JournalEntry>();
   for (const o of obs) {
     const ts = obsDate(o);
-    const day = ts.slice(0, 10);
+    const parsed = new Date(ts);
+    const day = Number.isNaN(parsed.getTime()) ? ts.slice(0, 10) : isoDay(parsed);
     let entry = byDay.get(day);
     if (!entry) {
       entry = { id: `fhir-vitals-${day}`, ts, source: "fhir", symptoms: [], tags: ["vitals", "from-ehr"], notes: "Vital signs recorded in EHR", vitals: {} };
@@ -606,12 +608,30 @@ export function mergeFhirImport(record: HealthRecord, imp: FhirImport, conn: Con
   p.conditions = dedupe([...p.conditions, ...(imp.profile.conditions ?? [])]);
   p.medications = dedupe([...p.medications, ...(imp.profile.medications ?? [])]);
   p.allergies = dedupe([...p.allergies, ...(imp.profile.allergies ?? [])]);
-  const journal = [...record.journal.filter((e) => !(e.source === "fhir" && e.id.startsWith("fhir-"))), ...imp.journal];
-  const labs = [...record.labs.filter((l) => l.source_system !== "fhir"), ...imp.labs];
+  // Replace only what THIS connection imported before. Untagged FHIR items come
+  // from an older version; they're treated as this connection's only when it's the sole FHIR source.
+  const soleFhir = record.connections.filter((c) => c.kind === "fhir").length <= 1;
+  const mine = (connectionId: string | undefined, isFhir: boolean) => connectionId === conn.id || (!connectionId && isFhir && soleFhir);
+  const tag = <T extends { id: string; connectionId?: string }>(x: T): T => ({ ...x, id: `${conn.id}:${x.id}`, connectionId: conn.id });
+  const journal = [...record.journal.filter((e) => !mine(e.connectionId, e.source === "fhir")), ...imp.journal.map(tag)];
+  const labs = [...record.labs.filter((l) => !mine(l.connectionId, l.source_system === "fhir")), ...imp.labs.map(tag)];
   const connections = record.connections.map((c) =>
     c.id === conn.id ? { ...c, lastSync: new Date().toISOString(), counts: imp.counts } : c,
   );
   return { ...record, profile: p, journal, labs, connections };
+}
+
+/** Remove a connection and everything it imported (leaves other sources alone). */
+export function removeConnectionData(record: HealthRecord, connId: string): HealthRecord {
+  const conn = record.connections.find((c) => c.id === connId);
+  const soleFhir = conn?.kind === "fhir" && record.connections.filter((c) => c.kind === "fhir").length <= 1;
+  const mine = (connectionId: string | undefined, isFhir: boolean) => connectionId === connId || (!connectionId && isFhir && soleFhir);
+  return {
+    ...record,
+    connections: record.connections.filter((c) => c.id !== connId),
+    journal: record.journal.filter((e) => !mine(e.connectionId, e.source === "fhir")),
+    labs: record.labs.filter((l) => !mine(l.connectionId, l.source_system === "fhir")),
+  };
 }
 
 /** Export the whole record as a FHIR R4 Bundle (collection) so it can travel the other way. */

@@ -31,7 +31,7 @@ export function SymptomHeatmap({ journal }: { journal: JournalEntry[] }) {
       counts.set(row, m);
     };
     for (const e of journal) {
-      const day = e.ts.slice(0, 10);
+      const day = isoDay(new Date(e.ts));
       if (day < first) continue;
       for (const s of e.symptoms) bump(s.toLowerCase(), day, 1);
       if (e.pain != null && e.pain > 0) bump("pain (score)", day, e.pain / 10);

@@ -8,14 +8,14 @@ import { TriageBanner } from "@/components/TriageBanner";
 import { RecordPanel } from "@/components/record/RecordPanel";
 import { PersonSwitcher } from "@/components/PersonSwitcher";
 import { plainText } from "@/components/Markdown";
-import { activePerson, chatStore, initActivePerson, prefsStore, recordStore, useChat, usePrefs, type Attachment } from "@/lib/store";
+import { activePerson, chatStore, initActivePerson, prefsStore, recordStore, STORAGE_ERROR_EVENT, useChat, usePrefs, type Attachment } from "@/lib/store";
 import { clearConversation, clientOverrideHeaders, dismissTriage, sendMessage, stopStreaming, transcriptText } from "@/lib/chat-client";
 import { SettingsDialog } from "@/components/SettingsDialog";
 import { IntroDialog } from "@/components/IntroDialog";
 import { PhoneDialog } from "@/components/PhoneDialog";
 import { bus, type SendRequest } from "@/lib/bus";
 import { speak, stopSpeaking, useSpeaking } from "@/lib/speech";
-import { summarizeRecordForModel, uid } from "@/lib/record";
+import { summarizeRecordForModel, uid, type TriageLevel } from "@/lib/record";
 
 export default function Home() {
   const chat = useChat();
@@ -31,6 +31,8 @@ export default function Home() {
   const [mounted, setMounted] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [phoneOpen, setPhoneOpen] = useState(false);
+  const [toast, setToast] = useState<{ text: string; tone: "ok" | "error" } | null>(null);
+  const savedThroughRef = useRef<string | undefined>(undefined);
   // On phones the record is a drawer that starts closed; on desktop it's a remembered side panel.
   const [drawerOpen, setDrawerOpen] = useState(false);
 
@@ -79,26 +81,74 @@ export default function Home() {
 
   useEffect(() => bus.onSend((req) => void doSend(req)), [doSend]);
 
-  const saveSessionNote = async () => {
-    if (chat.messages.length < 2) return;
+  const showToast = useCallback((text: string, tone: "ok" | "error" = "ok") => {
+    setToast({ text, tone });
+    window.setTimeout(() => setToast((t) => (t?.text === text ? null : t)), tone === "error" ? 8000 : 3500);
+  }, []);
+
+  // Browser storage full (or blocked): say so instead of silently not saving.
+  useEffect(() => {
+    let lastShown = 0;
+    const onErr = (e: Event) => {
+      if (Date.now() - lastShown < 15_000) return;
+      lastShown = Date.now();
+      const key = (e as CustomEvent<{ key: string }>).detail?.key ?? "";
+      showToast(
+        key.includes("record")
+          ? "Your browser's storage is full, so recent changes to your record aren't saved. Back it up (Connections → Backup) and remove old imports."
+          : "Browser storage is full; this conversation may not be saved. Start a new conversation to free space.",
+        "error",
+      );
+    };
+    window.addEventListener(STORAGE_ERROR_EVENT, onErr);
+    return () => window.removeEventListener(STORAGE_ERROR_EVENT, onErr);
+  }, [showToast]);
+
+  /** Summarize the conversation into the record. Skips if nothing new since the last save. */
+  const saveSessionNote = async (): Promise<boolean> => {
+    const msgs = chatStore.get().messages;
+    const lastId = msgs[msgs.length - 1]?.id;
+    if (msgs.length < 2 || msgs.some((m) => m.streaming)) return false;
+    if (savedThroughRef.current === lastId) {
+      showToast("Already saved to your record");
+      return true;
+    }
     setSavingNote(true);
+    const recordKey = recordStore.currentKey();
     try {
       const res = await fetch("/api/visit-summary", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...clientOverrideHeaders() },
         body: JSON.stringify({ kind: "session", recordSummary: summarizeRecordForModel(recordStore.get()), transcript: transcriptText(40) }),
       });
-      const data = await res.json();
-      if (res.ok) {
-        recordStore.set((r) => ({ ...r, sessionNotes: [...r.sessionNotes, { id: uid(), ts: new Date().toISOString(), summary: data.summary + (data.followUps?.length ? ` Follow-ups: ${data.followUps.join("; ")}` : ""), triage: data.triage }] }));
+      const data = (await res.json().catch(() => ({}))) as { summary?: string; followUps?: string[]; triage?: TriageLevel; error?: string };
+      if (!res.ok || !data.summary) {
+        showToast(data.error ?? "Couldn't save a note for this conversation.", "error");
+        return false;
       }
+      if (recordStore.currentKey() !== recordKey) return false; // person switched while waiting
+      recordStore.set((r) => ({
+        ...r,
+        sessionNotes: [...r.sessionNotes, { id: uid(), ts: new Date().toISOString(), summary: data.summary + (data.followUps?.length ? ` Follow-ups: ${data.followUps.join("; ")}` : ""), triage: data.triage }],
+      }));
+      savedThroughRef.current = lastId;
+      showToast("Saved a note to your record (Plan → Session notes)");
+      return true;
+    } catch {
+      showToast("Couldn't reach the server to save a note.", "error");
+      return false;
     } finally {
       setSavingNote(false);
     }
   };
 
   const newConversation = async () => {
-    if (chat.messages.length >= 2) await saveSessionNote();
+    if (busy) stopStreaming();
+    if (chat.messages.length >= 2) {
+      const ok = await saveSessionNote();
+      if (!ok && !window.confirm("The note couldn't be saved. Start a new conversation anyway? This one will be cleared.")) return;
+    }
+    savedThroughRef.current = undefined;
     clearConversation();
     stopSpeaking();
   };
@@ -120,7 +170,7 @@ export default function Home() {
         <div className="ml-auto flex items-center gap-1">
           {chat.messages.length > 0 && (
             <>
-              <HeaderButton onClick={saveSessionNote} title="Summarize this conversation into your record" disabled={savingNote}>
+              <HeaderButton onClick={() => void saveSessionNote()} title="Summarize this conversation into your record" disabled={savingNote || busy}>
                 💾<span className="hidden sm:inline"> {savingNote ? "Saving…" : "Save note"}</span>
               </HeaderButton>
               <HeaderButton onClick={newConversation} title="Start a new conversation (saves a note first)">
@@ -148,6 +198,19 @@ export default function Home() {
       {mounted && <IntroDialog />}
       <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <PhoneDialog open={phoneOpen} onClose={() => setPhoneOpen(false)} />
+      {toast && (
+        <div
+          role="status"
+          className="no-print fixed left-1/2 top-16 z-[60] max-w-[92vw] -translate-x-1/2 rounded-xl border px-3 py-2 text-xs shadow-lg"
+          style={{
+            borderColor: toast.tone === "error" ? "var(--critical)" : "var(--border)",
+            background: toast.tone === "error" ? "color-mix(in srgb, var(--critical) 12%, var(--surface))" : "var(--surface)",
+          }}
+        >
+          {toast.tone === "error" ? "⚠️ " : "✓ "}
+          {toast.text}
+        </div>
+      )}
 
       {mounted && health && !health.hasCredentials && !prefs.apiKey && (
         <div className="no-print flex flex-wrap items-center gap-2 border-b border-[var(--warning)]/60 bg-[var(--warning)]/15 px-4 py-2 text-xs text-ink">

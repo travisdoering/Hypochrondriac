@@ -1,7 +1,25 @@
 "use client";
 
 import { useState } from "react";
-import { addPerson, removePerson, switchPerson, usePrefs } from "@/lib/store";
+import { addPerson as addPersonRaw, removePerson as removePersonRaw, switchPerson as switchPersonRaw, usePrefs } from "@/lib/store";
+import { stopForSwitch } from "@/lib/chat-client";
+import { stopSpeaking } from "@/lib/speech";
+
+// Any reply in progress belongs to the current person: stop it cleanly first.
+const switchPerson = (id: string) => {
+  stopForSwitch();
+  stopSpeaking();
+  switchPersonRaw(id);
+};
+const addPerson = (name: string, emoji: string) => {
+  stopForSwitch();
+  stopSpeaking();
+  addPersonRaw(name, emoji);
+};
+const removePerson = (id: string) => {
+  stopForSwitch();
+  removePersonRaw(id);
+};
 
 const EMOJIS = ["🙂", "👩", "👨", "👧", "👦", "👵", "👴", "🧑", "👶", "🐕"];
 

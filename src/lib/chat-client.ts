@@ -57,14 +57,41 @@ export function blobToDataUrl(blob: Blob): Promise<string> {
   });
 }
 
+/** Image types the Claude API accepts. */
+const API_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+
+/**
+ * Upper bound on attachment data (base64 chars) per request. Hosted
+ * serverless platforms cap request bodies at ~4.5 MB; a local or self-hosted
+ * server doesn't. Override with NEXT_PUBLIC_MAX_REQUEST_MB.
+ */
+export function requestBudgetChars(): number {
+  const env = Number(process.env.NEXT_PUBLIC_MAX_REQUEST_MB);
+  const hosted = typeof location !== "undefined" && /\.(vercel|netlify)\.app$/i.test(location.hostname);
+  const mb = Number.isFinite(env) && env > 0 ? env : hosted ? 4 : 24;
+  return Math.floor(mb * 1024 * 1024 * 0.8); // leave room for history and the record
+}
+
 export async function fileToAttachment(file: File): Promise<Attachment> {
   const id = uid();
-  if (file.type.startsWith("image/")) {
+  const isHeic = /\.(heic|heif)$/i.test(file.name) || /heic|heif/i.test(file.type);
+  if (file.type.startsWith("image/") || isHeic) {
     const data = await compressImage(file);
-    return { id, kind: "image", name: file.name, mediaType: "image/jpeg", data, origin: "upload" };
+    const mediaType = /^data:([^;]+);/.exec(data)?.[1] ?? "";
+    if (!API_IMAGE_TYPES.has(mediaType)) {
+      throw new Error(
+        `This browser can't read "${file.name}"${isHeic ? " (HEIC photo)" : ""}. Use a JPG or PNG, or take the photo with the in-app camera.`,
+      );
+    }
+    return { id, kind: "image", name: file.name, mediaType, data, origin: "upload" };
   }
   if (file.type === "application/pdf" || /\.pdf$/i.test(file.name)) {
-    if (file.size > 20 * 1024 * 1024) throw new Error("PDF is over 20 MB");
+    const maxBytes = Math.min(20 * 1024 * 1024, Math.floor((requestBudgetChars() * 3) / 4));
+    if (file.size > maxBytes) {
+      throw new Error(
+        `"${file.name}" is ${(file.size / 1024 / 1024).toFixed(1)} MB; the limit here is ${(maxBytes / 1024 / 1024).toFixed(1)} MB. Try a photo of the important page instead.`,
+      );
+    }
     const data = await blobToDataUrl(file);
     return { id, kind: "pdf", name: file.name, mediaType: "application/pdf", data, origin: "upload" };
   }
@@ -74,19 +101,40 @@ export async function fileToAttachment(file: File): Promise<Attachment> {
   return { id, kind: "text", name: file.name, mediaType: file.type || "text/plain", data: text, origin: "upload" };
 }
 
+function safeDataUrl(s: string): { mediaType: string; data: string } | null {
+  try {
+    return dataUrlToBase64(s);
+  } catch {
+    return null;
+  }
+}
+
 // ---- Build API messages from display messages ------------------------------
 
 const HISTORY_LIMIT = 40;
 const IMAGE_TURNS_KEPT = 6;
 
-export function toApiMessages(messages: ChatMessage[]): Anthropic.MessageParam[] {
+export function toApiMessages(messages: ChatMessage[], budgetChars = requestBudgetChars()): Anthropic.MessageParam[] {
   const recent = messages.filter((m) => !m.error || m.text).slice(-HISTORY_LIMIT);
-  // Only the most recent user turns keep their binary attachments.
+  // Only the most recent user turns keep their binary attachments, newest
+  // first, within the request budget. Anything else becomes a short note.
   const userIdx = recent.map((m, i) => (m.role === "user" ? i : -1)).filter((i) => i >= 0);
-  const keepBinary = new Set(userIdx.slice(-IMAGE_TURNS_KEPT));
+  const keepBinary = new Set<string>();
+  let budget = budgetChars;
+  for (const i of userIdx.slice(-IMAGE_TURNS_KEPT).reverse()) {
+    for (const a of recent[i].attachments ?? []) {
+      if (a.kind === "text" || !a.data) continue;
+      const parsed = safeDataUrl(a.data);
+      if (!parsed) continue;
+      if (a.kind === "image" && !API_IMAGE_TYPES.has(parsed.mediaType)) continue;
+      if (parsed.data.length > budget) continue;
+      budget -= parsed.data.length;
+      keepBinary.add(a.id);
+    }
+  }
 
   const out: Anthropic.MessageParam[] = [];
-  recent.forEach((m, i) => {
+  recent.forEach((m) => {
     if (m.role === "assistant") {
       if (m.text.trim()) out.push({ role: "assistant", content: m.text });
       return;
@@ -94,21 +142,21 @@ export function toApiMessages(messages: ChatMessage[]): Anthropic.MessageParam[]
     const blocks: Anthropic.ContentBlockParam[] = [];
     for (const a of m.attachments ?? []) {
       if (a.kind === "image") {
-        if (keepBinary.has(i)) {
+        if (keepBinary.has(a.id)) {
           const { mediaType, data } = dataUrlToBase64(a.data);
           blocks.push({
             type: "image",
             source: { type: "base64", media_type: mediaType as "image/jpeg" | "image/png" | "image/gif" | "image/webp", data },
           });
         } else {
-          blocks.push({ type: "text", text: `[image attached earlier: ${a.name}]` });
+          blocks.push({ type: "text", text: `[image attached earlier, no longer available: ${a.name}]` });
         }
       } else if (a.kind === "pdf") {
-        if (keepBinary.has(i)) {
+        if (keepBinary.has(a.id)) {
           const { data } = dataUrlToBase64(a.data);
           blocks.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data }, title: a.name });
         } else {
-          blocks.push({ type: "text", text: `[PDF attached earlier: ${a.name}]` });
+          blocks.push({ type: "text", text: `[PDF attached earlier, no longer available: ${a.name}]` });
         }
       } else {
         blocks.push({ type: "text", text: `<attached_file name="${a.name}">\n${a.data.slice(0, 60_000)}\n</attached_file>` });
@@ -258,13 +306,24 @@ export async function sendMessage(opts: SendOptions): Promise<string> {
   const abort = new AbortController();
   activeAbort = abort;
 
-  const update = (patch: Partial<ChatMessage> | ((m: ChatMessage) => ChatMessage)) =>
+  // If the person is switched mid-reply, everything still arriving belongs to
+  // the previous person: drop it rather than writing into the new record.
+  const recordKey = recordStore.currentKey();
+  const chatKey = chatStore.currentKey();
+  const stillHere = () => recordStore.currentKey() === recordKey && chatStore.currentKey() === chatKey;
+
+  const update = (patch: Partial<ChatMessage> | ((m: ChatMessage) => ChatMessage)) => {
+    if (!stillHere()) return;
     chatStore.set((c) => ({
       ...c,
       messages: c.messages.map((m) => (m.id === asstMsg.id ? (typeof patch === "function" ? patch(m) : { ...m, ...patch }) : m)),
     }));
+  };
 
   let full = "";
+  let gotDone = false;
+  let gotError = false;
+  let httpStatus = 0;
   try {
     const res = await fetch("/api/chat", {
       method: "POST",
@@ -272,7 +331,8 @@ export async function sendMessage(opts: SendOptions): Promise<string> {
       body: JSON.stringify({ messages: apiMessages, recordSummary, record: recordForSearch, extra: opts.extra }),
       signal: abort.signal,
     });
-    if (!res.body) throw new Error("No response body");
+    httpStatus = res.status;
+    if (!res.body) throw new Error(`The server didn't send a reply (HTTP ${res.status}).`);
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = "";
@@ -288,6 +348,10 @@ export async function sendMessage(opts: SendOptions): Promise<string> {
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
+      if (!stillHere()) {
+        abort.abort();
+        break;
+      }
       buf += dec.decode(value, { stream: true });
       let nl: number;
       while ((nl = buf.indexOf("\n")) >= 0) {
@@ -306,6 +370,7 @@ export async function sendMessage(opts: SendOptions): Promise<string> {
             flushText();
             break;
           case "tool": {
+            if (!stillHere()) break;
             const te: ToolEvent = { name: ev.name as string, input: ev.input as Record<string, unknown>, result: ev.result as ToolEvent["result"] };
             recordStore.set((r) => applyTool(r, te));
             if (te.name === "set_triage") {
@@ -319,9 +384,12 @@ export async function sendMessage(opts: SendOptions): Promise<string> {
             break;
           }
           case "error":
+            gotError = true;
             update({ error: ev.message as string });
             break;
           case "done": {
+            gotDone = true;
+            if (!stillHere()) break;
             const u = ev.usage as { input: number; output: number; cacheRead: number };
             chatStore.set((c) => ({ ...c, usage: { input: c.usage.input + u.input, output: c.usage.output + u.output, cacheRead: c.usage.cacheRead + u.cacheRead, turns: c.usage.turns + 1 } }));
             break;
@@ -330,13 +398,38 @@ export async function sendMessage(opts: SendOptions): Promise<string> {
       }
     }
     flushText(true);
+    if (!gotDone && !gotError && !abort.signal.aborted) {
+      // Not our NDJSON (an HTML error page, a proxy timeout) or the stream was cut off.
+      update({
+        error:
+          httpStatus >= 400
+            ? httpStatus === 413
+              ? "That message was too large to send (attachments are probably too big). Try a smaller file or fewer pages."
+              : `The server had a problem (HTTP ${httpStatus}). Please try again.`
+            : "The reply was cut off before it finished. Please try again.",
+      });
+    }
   } catch (e) {
-    if ((e as Error).name !== "AbortError") update({ error: e instanceof Error ? e.message : String(e) });
+    if ((e as Error).name !== "AbortError") update({ error: e instanceof Error && e.message !== "Failed to fetch" ? e.message : "Couldn't reach the server. Check your connection and try again." });
+    else if (!full) update({ error: "Stopped." });
   } finally {
     update({ streaming: false, text: full });
     if (activeAbort === abort) activeAbort = null;
   }
   return full;
+}
+
+/**
+ * Stop any reply in progress and mark it stopped, synchronously, so the
+ * current person's conversation is saved cleanly before switching people.
+ */
+export function stopForSwitch() {
+  stopStreaming();
+  chatStore.set((c) => ({
+    ...c,
+    messages: c.messages.map((m) => (m.streaming ? { ...m, streaming: false, error: m.text ? m.error : "Stopped." } : m)),
+  }));
+  chatStore.flush();
 }
 
 /** Headers carrying the user's own API key / model / effort choices (if any). */

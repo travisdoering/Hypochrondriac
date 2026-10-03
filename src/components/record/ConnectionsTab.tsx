@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { recordStore, useRecord } from "@/lib/store";
+import { migrateRecord, recordStore, useRecord } from "@/lib/store";
 import { EMPTY_RECORD, uid, type Connection, type HealthRecord, type LabPanel } from "@/lib/record";
 import {
   FHIR_PRESETS,
@@ -14,6 +14,7 @@ import {
   mergeFhirImport,
   patientDisplayName,
   recordToFhirBundle,
+  removeConnectionData,
   type Patient,
 } from "@/lib/fhir";
 import { DICOM_PRESETS, DicomWebClient, type DicomStudy } from "@/lib/dicom";
@@ -94,15 +95,20 @@ function NewFhirConnection({ onDone }: { onDone: () => void }) {
     setErr(null);
     setBusy(true);
     try {
-      const conn: Connection = { id: uid(), kind: "fhir", label: label || baseUrl, baseUrl: baseUrl.replace(/\/+$/, ""), authMode, clientId: clientId || undefined };
-      const client = new FhirClient(conn.baseUrl, authMode === "bearer" ? token : undefined);
+      const conn: Connection = { id: uid(), kind: "fhir", label: label || baseUrl, baseUrl: baseUrl.trim().replace(/\/+$/, ""), authMode, clientId: clientId.trim() || undefined };
+      if (recordStore.get().connections.some((c) => c.kind === "fhir" && c.baseUrl === conn.baseUrl)) {
+        throw new Error("That server is already connected below. Use its Sync or Log in button.");
+      }
+      if (authMode === "smart" && !conn.clientId) throw new Error("A client ID is required for SMART login.");
+      if (authMode === "bearer" && !token.trim()) throw new Error("Paste an access token, or choose a different sign-in method.");
+      const client = new FhirClient(conn.baseUrl, authMode === "bearer" ? token.trim() : undefined);
       await client.metadata(); // reachability check
+      // Validate everything before saving, so a failed attempt leaves no half-made connection behind.
+      const cfg = authMode === "smart" ? await client.smartConfiguration() : null;
+      if (authMode === "smart" && !cfg?.authorization_endpoint) throw new Error("This server did not advertise SMART authorization endpoints.");
+      if (authMode === "bearer") sessionStorage.setItem(`hypo.bearer.${conn.id}`, token.trim());
       recordStore.set((r) => ({ ...r, connections: [...r.connections, conn] }));
-      if (authMode === "bearer" && token) sessionStorage.setItem(`hypo.bearer.${conn.id}`, token);
-      if (authMode === "smart") {
-        const cfg = await client.smartConfiguration();
-        if (!cfg?.authorization_endpoint) throw new Error("This server did not advertise SMART authorization endpoints.");
-        if (!clientId) throw new Error("A client ID is required for SMART login.");
+      if (authMode === "smart" && cfg) {
         window.location.href = await beginSmartLaunch(conn, cfg);
         return;
       }
@@ -209,13 +215,7 @@ function FhirConnectionCard({ conn }: { conn: Connection }) {
   const remove = () => {
     clearSmartTokens(conn.id);
     sessionStorage.removeItem(`hypo.bearer.${conn.id}`);
-    recordStore.set((r) => ({
-      ...r,
-      connections: r.connections.filter((c) => c.id !== conn.id),
-      // drop data imported from this connection
-      journal: r.journal.filter((e) => e.source !== "fhir"),
-      labs: r.labs.filter((l) => l.source_system !== "fhir"),
-    }));
+    recordStore.set((r) => removeConnectionData(r, conn.id));
   };
 
   return (
@@ -490,7 +490,7 @@ function ImportExport() {
         recordStore.set((rec) => mergeFhirImport({ ...rec, connections: [...rec.connections, conn] }, imp, conn));
         setMsg(`Imported FHIR bundle: ${Object.entries(imp.counts).filter(([, v]) => v).map(([k, v]) => `${v} ${k}`).join(", ")}.`);
       } else if (json?.version === 1 && json.profile) {
-        recordStore.set(() => ({ ...EMPTY_RECORD, ...(json as HealthRecord) }));
+        recordStore.set(() => migrateRecord(json));
         setMsg("Restored Hypochondriac record.");
       } else {
         setMsg("Unrecognized file. Expected a FHIR Bundle or a Hypochondriac export.");

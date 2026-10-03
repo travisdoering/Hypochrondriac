@@ -84,11 +84,13 @@ export function Chat({ messages, onStarter }: { messages: ChatMessage[]; onStart
 
   if (messages.length === 0) {
     return (
-      <div className="mx-auto flex h-full w-full max-w-3xl flex-col justify-center px-4 py-8">
-        <div className="mb-6 text-center">
-          <div className="mx-auto mb-3 grid h-14 w-14 place-items-center rounded-2xl bg-brand text-2xl text-brand-ink">+</div>
-          <h1 className="text-2xl font-semibold tracking-tight">What&apos;s going on today?</h1>
-          <p className="mt-2 text-ink-2">
+      // Scrolls when the content is taller than the screen (phones); centered otherwise.
+      <div className="h-full overflow-y-auto">
+      <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-center px-4 py-6 sm:py-8">
+        <div className="mb-4 text-center sm:mb-6">
+          <div className="mx-auto mb-3 hidden h-14 w-14 place-items-center rounded-2xl bg-brand text-2xl text-brand-ink sm:grid">+</div>
+          <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">What&apos;s going on today?</h1>
+          <p className="mt-2 text-sm text-ink-2 sm:text-base">
             Talk, type, or show me. I&apos;ll listen, keep track, make sense of reports, and tell you straight how urgent something is and who to see.
           </p>
         </div>
@@ -97,7 +99,7 @@ export function Chat({ messages, onStarter }: { messages: ChatMessage[]; onStart
             <button
               key={s.text}
               onClick={() => onStarter(s.text)}
-              className="flex items-start gap-3 rounded-xl border border-border bg-surface px-3 py-2.5 text-left text-sm text-ink hover:border-brand hover:bg-brand-soft/40"
+              className="flex items-start gap-3 rounded-xl border border-border bg-surface px-3 py-2 text-left text-sm text-ink hover:border-brand hover:bg-brand-soft/40 sm:py-2.5"
             >
               <span className="text-lg leading-none">{s.icon}</span>
               <span>{s.text}</span>
@@ -107,6 +109,7 @@ export function Chat({ messages, onStarter }: { messages: ChatMessage[]; onStart
         <p className="mt-6 text-center text-xs text-ink-3">
           Not a substitute for a clinician. In an emergency call 911. For a mental-health crisis call or text 988.
         </p>
+      </div>
       </div>
     );
   }
@@ -136,9 +139,13 @@ function MessageBubble({ m, onAddProvider }: { m: ChatMessage; onAddProvider: (p
         {m.attachments && m.attachments.length > 0 && (
           <div className="flex flex-wrap justify-end gap-2">
             {m.attachments.map((a) =>
-              a.kind === "image" ? (
+              a.kind === "image" && a.data ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img key={a.id} src={a.data} alt={a.name} className="max-h-48 rounded-xl border border-border object-cover" />
+              ) : a.kind === "image" ? (
+                <div key={a.id} className="rounded-xl border border-dashed border-border bg-surface px-3 py-2 text-xs text-ink-3" title="Large images aren't kept after you leave the page">
+                  🖼️ {a.name}
+                </div>
               ) : (
                 <div key={a.id} className="rounded-xl border border-border bg-surface px-3 py-2 text-xs text-ink-2">
                   {a.kind === "pdf" ? "📄" : "📎"} {a.name}

@@ -28,6 +28,8 @@ Open http://localhost:3000. Chrome or Edge gives you voice input; everything els
 
 No `.env.local`? Paste your key into **Settings (⚙️)** in the app instead. It is stored only in that browser.
 
+Want to click around without a key? `npm run dev:mock` runs the app against a local stand-in for the Anthropic API (canned replies that still exercise streaming, tool calls, the triage banner, the record and visit prep). It's for trying the UI, not for health advice.
+
 ## On your phone
 
 1. Run `npm run dev:lan` on your computer (phone and computer on the same Wi-Fi).
@@ -83,7 +85,12 @@ Snap attaches a still. Live mode attaches the current frame to every message and
 npm test
 ```
 
-Unit tests cover red-flag detection, CSV import, Bluetooth packet parsing, record search, the model-facing record summary and the proxy guard (`tests/*.test.ts`, run with `tsx --test`).
+`tests/*.test.ts` (run with `tsx --test`) cover:
+
+- the chat API route end to end against a mock Anthropic server (`scripts/mock-anthropic.mjs`): streaming, the tool loop, invalid tool input, server-side record search, model/effort/key headers, auth errors, structured visit summaries;
+- how tool results change the record, how conversation history and attachments are sent (request budget, unsupported image types);
+- family profiles never overwriting each other's saved record, FHIR sources staying isolated per connection;
+- red-flag detection, CSV import, Bluetooth packet and timestamp parsing, record search, number formatting, the proxy guard.
 
 ## Environment
 
@@ -92,6 +99,7 @@ Unit tests cover red-flag detection, CSV import, Bluetooth packet parsing, recor
 | `ANTHROPIC_API_KEY` | required for the conversation |
 | `HYPO_MODEL` | override model id (default `claude-opus-5`) |
 | `HYPO_EFFORT` | `low` / `medium` (default) / `high` / `xhigh` / `max` |
+| `NEXT_PUBLIC_MAX_REQUEST_MB` | attachment budget per message. Defaults to 24 MB, or 4 MB on `*.vercel.app` / `*.netlify.app` where request bodies are capped. |
 
 ## Safety posture
 
