@@ -38,7 +38,8 @@ function str(ds: DicomJson, t: string): string | undefined {
   if (typeof v === "object" && v && "Alphabetic" in (v as Record<string, unknown>)) {
     return String((v as { Alphabetic?: string }).Alphabetic ?? "").replace(/\^/g, " ").trim();
   }
-  return String(v);
+  // DICOM uses "^" between components (e.g. "Extremities^Foot_ankle"); show it as a space.
+  return String(v).replace(/\^+/g, " ").replace(/\s{2,}/g, " ").trim();
 }
 function num(ds: DicomJson, t: string): number | undefined {
   const v = tag(ds, t)?.[0];

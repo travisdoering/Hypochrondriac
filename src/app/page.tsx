@@ -320,10 +320,17 @@ function useMediaQuery(q: string): boolean {
   const [m, setM] = useState(false);
   useEffect(() => {
     const mq = window.matchMedia(q);
-    const on = () => setM(mq.matches);
+    const on = () => setM(window.matchMedia(q).matches);
     on();
+    // "change" alone can be missed (device emulation, some rotation paths); re-check on resize too.
     mq.addEventListener("change", on);
-    return () => mq.removeEventListener("change", on);
+    window.addEventListener("resize", on);
+    window.addEventListener("orientationchange", on);
+    return () => {
+      mq.removeEventListener("change", on);
+      window.removeEventListener("resize", on);
+      window.removeEventListener("orientationchange", on);
+    };
   }, [q]);
   return m;
 }

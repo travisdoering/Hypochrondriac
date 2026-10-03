@@ -4,7 +4,7 @@ import { useEffect, useRef } from "react";
 import { Markdown } from "./Markdown";
 import { ProviderCard } from "./ProviderCard";
 import type { ChatMessage, ToolEvent } from "@/lib/store";
-import { recordStore } from "@/lib/store";
+import { recordStore, usePrefs } from "@/lib/store";
 import { uid } from "@/lib/record";
 import type { Provider } from "@/lib/nppes";
 
@@ -58,6 +58,9 @@ function toolChip(t: ToolEvent): { label: string; detail?: string } | null {
 }
 
 export function Chat({ messages, onStarter }: { messages: ChatMessage[]; onStarter: (t: string) => void }) {
+  const prefs = usePrefs();
+  const person = prefs.people.find((p) => p.id === prefs.activePersonId);
+  const who = person && person.id !== "me" ? person.name : null;
   const endRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
@@ -89,7 +92,7 @@ export function Chat({ messages, onStarter }: { messages: ChatMessage[]; onStart
       <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-center px-4 py-6 sm:py-8">
         <div className="mb-4 text-center sm:mb-6">
           <div className="mx-auto mb-3 hidden h-14 w-14 place-items-center rounded-2xl bg-brand text-2xl text-brand-ink sm:grid">+</div>
-          <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">What&apos;s going on today?</h1>
+          <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">{who ? `What's going on with ${who} today?` : "What's going on today?"}</h1>
           <p className="mt-2 text-sm text-ink-2 sm:text-base">
             Talk, type, or show me. I&apos;ll listen, keep track, make sense of reports, and tell you straight how urgent something is and who to see.
           </p>

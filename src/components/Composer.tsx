@@ -167,7 +167,7 @@ export function Composer(p: ComposerProps) {
             }
           }}
           rows={1}
-          placeholder={sr.listening ? "Listening..." : p.handsFree ? "Hands-free: just talk" : "Tell me what's going on..."}
+          placeholder={sr.listening ? "Listening..." : p.handsFree ? "Hands-free: just talk" : "What's going on?"}
           className="max-h-[200px] min-h-[40px] flex-1 resize-none bg-transparent px-2 py-2 text-[15px] text-ink outline-none placeholder:text-ink-3"
         />
         {sr.supported && (
