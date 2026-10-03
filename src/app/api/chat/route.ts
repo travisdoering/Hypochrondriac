@@ -239,7 +239,9 @@ export async function POST(req: NextRequest) {
   });
 }
 
-const ALLOWED_MODELS = new Set(["claude-opus-5", "claude-sonnet-5", "claude-fable-5-1", "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"]);
+// Only models that accept adaptive thinking plus every effort level the Settings menu offers.
+// (Haiku 4.5 takes neither; Sonnet 4.6 rejects "xhigh".)
+const ALLOWED_MODELS = new Set(["claude-opus-5", "claude-sonnet-5", "claude-fable-5-1", "claude-opus-4-8"]);
 function sanitizeModel(m: string | null): string | undefined {
   return m && ALLOWED_MODELS.has(m) ? m : undefined;
 }

@@ -47,7 +47,8 @@ export async function POST(req: NextRequest) {
   }
   const body = (await req.json()) as Body;
   const hdrModel = req.headers.get("x-hypo-model");
-  const model = hdrModel && /^claude-[a-z0-9-]+$/.test(hdrModel) ? hdrModel : MODEL;
+  // Same allowlist as the chat route: models that accept adaptive thinking + effort.
+  const model = hdrModel && ["claude-opus-5", "claude-sonnet-5", "claude-fable-5-1", "claude-opus-4-8"].includes(hdrModel) ? hdrModel : MODEL;
   const client = new Anthropic({ timeout: 110_000, ...(userKey ? { apiKey: userKey } : {}) });
 
   try {
