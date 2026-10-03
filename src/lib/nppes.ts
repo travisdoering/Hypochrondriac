@@ -166,14 +166,24 @@ export async function searchProviders(q: ProviderQuery): Promise<{ providers: Pr
 
   const zip = q.postal_code?.replace(/\D/g, "").slice(0, 5);
   const city = q.city?.toLowerCase();
+  const term = q.specialty ? normalizeSpecialty(q.specialty).taxonomy.toLowerCase() : "";
+  // The registry matches a specialty anywhere in someone's record, so show the
+  // taxonomy that matched the search, and push trainees (students, residents) down.
+  const quality = new Map<string, number>();
   const mapped: Provider[] = (data.results ?? []).map((r) => {
     const loc = r.addresses?.find((a) => a.address_purpose === "LOCATION") ?? r.addresses?.[0];
-    const tax = r.taxonomies?.find((t) => t.primary) ?? r.taxonomies?.[0];
+    const primary = r.taxonomies?.find((t) => t.primary) ?? r.taxonomies?.[0];
+    const matching = term ? r.taxonomies?.filter((t) => t.desc?.toLowerCase().startsWith(term)) ?? [] : [];
+    const tax = matching.find((t) => t.primary) ?? matching[0] ?? primary;
+    let penalty = 0;
+    if (/student|resident|trainee|intern\b/i.test(primary?.desc ?? "")) penalty += 10;
+    if (term && tax !== primary) penalty += 1;
+    quality.set(r.number, penalty);
     const name =
       r.enumeration_type === "NPI-2"
         ? r.basic.organization_name ?? "Organization"
         : [r.basic.name_prefix, r.basic.first_name, r.basic.middle_name, r.basic.last_name]
-            .filter(Boolean)
+            .filter((s) => s && s.trim() !== "--") // the registry uses "--" for "no prefix"
             .map((s) => titleCase(s!))
             .join(" ");
     const address = [loc?.address_1, loc?.address_2].filter(Boolean).map((s) => titleCase(s!)).join(", ");
@@ -197,7 +207,7 @@ export async function searchProviders(q: ProviderQuery): Promise<{ providers: Pr
   });
 
   const rank = (p: Provider) => {
-    let score = 0;
+    let score = quality.get(p.npi) ?? 0;
     if (zip) score += p.postalCode === zip ? 0 : p.postalCode?.slice(0, 3) === zip.slice(0, 3) ? 1 : 3;
     if (city) score += p.city?.toLowerCase() === city ? 0 : 2;
     if (!p.phone) score += 0.5;

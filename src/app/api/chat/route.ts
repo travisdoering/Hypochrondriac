@@ -37,7 +37,7 @@ export async function POST(req: NextRequest) {
   const userKey = req.headers.get("x-anthropic-key")?.trim() || undefined;
   if (!userKey && !process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN) {
     return ndjsonError(
-      "No Anthropic API key. Open Settings (⚙️) and paste your key, or add ANTHROPIC_API_KEY to .env.local and restart the dev server.",
+      "No Anthropic API key yet. Open Settings (⚙️) and paste your key - it stays on this device.",
       "no_api_key",
       500,
     );
